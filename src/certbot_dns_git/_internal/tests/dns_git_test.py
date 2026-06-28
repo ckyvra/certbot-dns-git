@@ -178,7 +178,7 @@ class TestGitClientE2E:
 
         verify = Path(temp := __import__("tempfile").mkdtemp())
         try:
-            clone(source=bare_repo, target=str(verify))
+            clone(source=bare_repo, target=str(verify), branch="main")
             content = (verify / "example.com.zone").read_text()
             assert '_acme-challenge.example.com. IN TXT "abc123"' in content
         finally:
