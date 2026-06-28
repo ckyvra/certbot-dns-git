@@ -1,7 +1,6 @@
 import shutil
 import textwrap
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from dulwich.porcelain import add, clone, commit, push
@@ -26,11 +25,19 @@ ZONE_CONTENT = textwrap.dedent("""\
 @pytest.fixture
 def bare_repo(tmp_path: Path) -> str:
     bare_dir = tmp_path / "remote.git"
-    bare_dir.mkdir()
-    Repo.init_bare(str(bare_dir))
-
     working = tmp_path / "working"
-    clone(source=str(bare_dir), target=str(working))
+    bare_dir.mkdir()
+
+    working.mkdir()
+    repo = Repo.init(str(working))
+
+    from dulwich.config import Config
+    cfg = repo.get_config()
+    section = b'remote "origin"'
+    cfg.set(section, b"url", str(bare_dir))
+    cfg.set(section, b"fetch", b"+refs/heads/*:refs/remotes/origin/*")
+    cfg.write_to_path()
+    repo.close()
 
     (working / "example.com.zone").write_text(ZONE_CONTENT)
 
@@ -41,6 +48,9 @@ def bare_repo(tmp_path: Path) -> str:
         author=b"Test <test@test>",
         committer=b"Test <test@test>",
     )
+
+    Repo.init_bare(str(bare_dir))
+
     push(
         repo=str(working),
         remote_location=str(bare_dir),
