@@ -1,10 +1,68 @@
+import shutil
 import textwrap
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from dulwich.porcelain import add, clone, commit, push
+from dulwich.repo import Repo
 
-from certbot_dns_git._internal.dns_git import _make_record_lines
+from certbot_dns_git._internal.dns_git import RECORD_NAME, _GitClient, _make_record_lines
+
+ZONE_CONTENT = textwrap.dedent("""\
+    $ORIGIN example.com.
+    $TTL 3600
+    @  IN  SOA  ns1.example.com. admin.example.com. (
+      1  ; serial
+      3600  ; refresh
+      900  ; retry
+      604800  ; expire
+      86400  ; minimum
+    )
+    @  IN  NS  ns1.example.com.
+""")
+
+
+@pytest.fixture
+def bare_repo(tmp_path: Path) -> str:
+    bare_dir = tmp_path / "remote.git"
+    bare_dir.mkdir()
+    Repo.init_bare(str(bare_dir))
+
+    working = tmp_path / "working"
+    clone(source=str(bare_dir), target=str(working))
+
+    (working / "example.com.zone").write_text(ZONE_CONTENT)
+
+    add(repo=str(working), paths=None)
+    commit(
+        repo=str(working),
+        message="init",
+        author=b"Test <test@test>",
+        committer=b"Test <test@test>",
+    )
+    push(
+        repo=str(working),
+        remote_location=str(bare_dir),
+        refspecs="main:main",
+    )
+
+    return str(bare_dir)
+
+
+@pytest.fixture
+def client(bare_repo: str) -> _GitClient:
+    c = _GitClient(
+        repo=bare_repo,
+        branch="main",
+        zone_path="",
+        zone_prefix="",
+        zone_suffix=".zone",
+        git_user="test",
+        git_email="test@test",
+    )
+    yield c
+    c.cleanup()
 
 
 class TestMakeRecordLines:
@@ -86,3 +144,45 @@ class TestMakeRecordLines:
         result = _make_record_lines("add", "example.com", "new", zone)
         assert "new" in "".join(result)
         assert "val" not in "".join(result)
+
+
+class TestGitClientE2E:
+    def test_add_txt_record(self, client: _GitClient):
+        assert client.add_txt_record("example.com", "abc123") is True
+        content = (client._repo_dir / "example.com.zone").read_text()
+        assert '_acme-challenge.example.com. IN TXT "abc123"' in content
+
+    def test_remove_txt_record(self, client: _GitClient):
+        client.add_txt_record("example.com", "abc123")
+        assert client.remove_txt_record("example.com", "abc123") is True
+        content = (client._repo_dir / "example.com.zone").read_text()
+        assert "_acme-challenge" not in content
+
+    def test_noop_when_record_exists(self, client: _GitClient):
+        client.add_txt_record("example.com", "abc123")
+        assert client.add_txt_record("example.com", "abc123") is False
+
+    def test_push_to_remote(self, bare_repo: str, client: _GitClient):
+        client.add_txt_record("example.com", "abc123")
+        client.cleanup()
+
+        verify = Path(temp := __import__("tempfile").mkdtemp())
+        try:
+            clone(source=bare_repo, target=str(verify))
+            content = (verify / "example.com.zone").read_text()
+            assert '_acme-challenge.example.com. IN TXT "abc123"' in content
+        finally:
+            shutil.rmtree(temp)
+
+    def test_remove_nonexistent_record_returns_false(self, client: _GitClient):
+        assert client.remove_txt_record("example.com", "doesnotexist") is False
+
+    def test_token_auth_https_check(self):
+        with pytest.raises(Exception):
+            c = _GitClient(
+                repo="https://github.com/user/repo.git",
+                token="test",
+                branch="main",
+            )
+            c._clone()
+            c.cleanup()
