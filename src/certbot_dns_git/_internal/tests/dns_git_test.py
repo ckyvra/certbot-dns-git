@@ -30,8 +30,8 @@ def bare_repo(tmp_path: Path) -> str:
 
     working.mkdir()
     repo = Repo.init(str(working))
+    repo.refs.set_symbolic_ref(b"HEAD", b"refs/heads/main")
 
-    from dulwich.config import Config
     cfg = repo.get_config()
     section = b'remote "origin"'
     cfg.set(section, b"url", str(bare_dir))
